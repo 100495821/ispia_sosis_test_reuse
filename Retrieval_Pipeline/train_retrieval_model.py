@@ -193,7 +193,6 @@ else:
         warmup_steps=args.warmup_ratio,  # float value = ratio in transformers v5+
         fp16=False,
         bf16=False,
-        use_cpu=True,
         dataloader_pin_memory=False,
         logging_steps=100,
         save_strategy="epoch",

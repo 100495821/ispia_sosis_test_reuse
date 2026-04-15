@@ -221,6 +221,11 @@ parser.add_argument(
     default=32,
     help="Embedding batch size.",
 )
+parser.add_argument(
+    "--skip-embeddings",
+    action="store_true",
+    help="Skip embedding computation — write only text fields (much smaller files).",
+)
 
 args = parser.parse_args()
 
@@ -228,8 +233,12 @@ methods2test_root = Path(args.methods2test_root).resolve()
 output_dir = Path(args.output_dir).resolve()
 
 # ---- Load the embedding model once, reuse across all splits ----
-print(f"Loading model: {args.model_name}")
-model = SentenceTransformer(args.model_name)
+if not args.skip_embeddings:
+    print(f"Loading model: {args.model_name}")
+    model = SentenceTransformer(args.model_name)
+else:
+    print("Skipping embeddings — will write text-only JSONL files.")
+    model = None
 
 # ---- Process every split (train, eval, test) ----
 for split in SPLITS:
@@ -256,31 +265,34 @@ for split in SPLITS:
 
     print(f"  Loaded {len(examples)} examples")
 
-    # ---- Embed both sides ----
-    print("  Embedding query texts...")
-    query_embeddings = embed_texts(
-        model=model,
-        texts=[ex["query_text"] for ex in examples],
-        batch_size=args.batch_size,
-    )
-
-    print("  Embedding candidate test texts...")
-    candidate_embeddings = embed_texts(
-        model=model,
-        texts=[ex["candidate_text"] for ex in examples],
-        batch_size=args.batch_size,
-    )
-
-    # ---- Merge embeddings back into each example row ----
-    rows: List[Dict[str, Any]] = []
-    for ex, query_emb, cand_emb in zip(examples, query_embeddings, candidate_embeddings):
-        rows.append(
-            {
-                **ex,
-                "query_embedding": query_emb,
-                "candidate_embedding": cand_emb,
-            }
+    if args.skip_embeddings:
+        rows = examples
+    else:
+        # ---- Embed both sides ----
+        print("  Embedding query texts...")
+        query_embeddings = embed_texts(
+            model=model,
+            texts=[ex["query_text"] for ex in examples],
+            batch_size=args.batch_size,
         )
+
+        print("  Embedding candidate test texts...")
+        candidate_embeddings = embed_texts(
+            model=model,
+            texts=[ex["candidate_text"] for ex in examples],
+            batch_size=args.batch_size,
+        )
+
+        # ---- Merge embeddings back into each example row ----
+        rows = []
+        for ex, query_emb, cand_emb in zip(examples, query_embeddings, candidate_embeddings):
+            rows.append(
+                {
+                    **ex,
+                    "query_embedding": query_emb,
+                    "candidate_embedding": cand_emb,
+                }
+            )
 
     # ---- Save to JSONL ----
     output_path = output_dir / f"methods2test_{split}_embedded.jsonl"
