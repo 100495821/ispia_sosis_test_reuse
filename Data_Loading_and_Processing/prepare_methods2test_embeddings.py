@@ -1,6 +1,5 @@
 # =============================================================================
 # prepare_methods2test_embeddings.py
-#
 # author: Ethan Soroko
 #
 # Loads Methods2Test corpus data, builds text representations of focal methods

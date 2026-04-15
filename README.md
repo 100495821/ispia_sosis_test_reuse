@@ -24,22 +24,38 @@ The SOSIS framework addresses challenges in developing and maintaining software-
 │  Description (input)  │
 └─────────┬────────────┘
           │
+     ┌────▼─────────────────┐
+     │  Data Loading         │  prepare_methods2test_embeddings.py
+     │  (embed corpus with   │  → processed/*_embedded.jsonl
+     │   all-MiniLM-L6-v2)   │
+     └────┬─────────────────┘
+          │
+     ┌────▼─────────────────┐
+     │  Contrastive Training │  train_retrieval_model.py
+     │  (fine-tune MiniLM    │  → models/retrieval_model/
+     │   with MNR loss)      │  → processed/candidate_embeddings.npy
+     └────┬─────────────────┘
+          │
+     ┌────▼─────────────────┐
+     │  Top-K Retrieval      │  query_top_k.py
+     │  (encode query,       │  → Top 5 test cases + scores
+     │   cosine similarity)  │
+     └────┬─────────────────┘
+          │
           ▼
-┌──────────────────────┐     ┌──────────────────────────────┐
-│  MiniLM Encoder      │────▶│  Vector Similarity Search     │
-│  (query embedding)   │     │  (Top 5 retrieval + scores)   │
-└──────────────────────┘     └──────────────┬───────────────┘
-                                            │
-                                            ▼
-                             ┌──────────────────────────────┐
-                             │  FLAN-T5 Generator            │
-                             │  (amplified test case)        │
-                             └──────────────────────────────┘
+     ┌──────────────────────┐
+     │  FLAN-T5 Generator    │  (future)
+     │  (amplified test case)│
+     └──────────────────────┘
 ```
 
-**Stage 1 — Retrieval:** The input description is embedded with MiniLM and compared against pre-computed test case embeddings to find the most semantically similar existing tests.
+**Stage 1 — Data Loading:** The Methods2Test corpus is loaded and each focal method + test case pair is embedded with all-MiniLM-L6-v2.
 
-**Stage 2 — Generation:** The input description and retrieved tests are fed to FLAN-T5, which generates a new amplified test case targeting uncovered behavior.
+**Stage 2 — Contrastive Training:** The pre-trained MiniLM encoder is fine-tuned with MultipleNegativesRankingLoss so that focal methods and their ground-truth test cases are pulled closer in embedding space. All candidates are then encoded with the fine-tuned model.
+
+**Stage 3 — Retrieval:** A new code input is encoded with the fine-tuned model and compared against the pre-computed candidate embeddings via cosine similarity to find the top-K most relevant test cases.
+
+**Stage 4 — Generation (future):** The input and retrieved tests will be fed to FLAN-T5 to generate an amplified test case targeting uncovered behavior.
 
 ## Models Used
 
@@ -82,19 +98,26 @@ ispia_sosis_test_reuse/
 ├── README.md                          # This file
 ├── requirements.txt                   # Python dependencies
 ├── setup.sh                           # One-command environment setup
-├── .gitignore                         # Excludes processed/ and .venv/
+├── .gitignore                         # Excludes processed/, .venv/, models/
 ├── Data_Loading_and_Processing/
 │   ├── README.md                      # Detailed docs for data scripts
 │   └── prepare_methods2test_embeddings.py
 │                                      # Loads corpus, embeds with MiniLM,
 │                                      # writes per-split JSONL output
-└── processed/                         # (git-ignored) Embedding output files
+├── Retrieval_Pipeline/
+│   ├── train_retrieval_model.py       # Fine-tune sentence-transformer,
+│   │                                  # encode candidates
+│   ├── query_top_k.py                 # Retrieve top-K tests for a query
+│   └── evaluate_retrieval.py          # Evaluate Hit@K and MRR@K on eval split
+├── models/                            # (git-ignored) Fine-tuned model weights
+│   └── retrieval_model/
+└── processed/                         # (git-ignored) Embeddings & index
     ├── methods2test_train_embedded.jsonl
     ├── methods2test_eval_embedded.jsonl
-    └── methods2test_test_embedded.jsonl
+    ├── methods2test_test_embedded.jsonl
+    ├── candidate_embeddings.npy        # Pre-encoded candidate vectors
+    └── candidate_metadata.jsonl        # Metadata for each candidate
 ```
-
-> **Note:** As the project grows, additional directories will be added for retrieval, generation, and evaluation components. This structure will be updated accordingly.
 
 ## Setup
 
@@ -155,9 +178,53 @@ This processes all three splits (train, eval, test) and writes JSONL files to `p
 }
 ```
 
-### Retrieval and generation
+### Training the retrieval model
 
-> **TODO:** The retrieval (Top 5 similarity search) and generation (FLAN-T5 amplification) stages have not yet been implemented as runnable scripts. These are the next milestones.
+Fine-tune the sentence-transformer on focal-method ↔ test-case pairs and encode all candidates:
+
+```bash
+source .venv/bin/activate
+
+# Full training (all 624K pairs, 1 epoch)
+python Retrieval_Pipeline/train_retrieval_model.py --encode-batch-size 64
+
+# Quick test run (500 pairs)
+python Retrieval_Pipeline/train_retrieval_model.py \
+    --max-train-pairs 500 --eval-sample 50 --encode-batch-size 64
+
+# Re-encode candidates with a previously saved model (no retraining)
+python Retrieval_Pipeline/train_retrieval_model.py --skip-training
+```
+
+Outputs: fine-tuned model in `models/retrieval_model/`, candidate embeddings in `processed/candidate_embeddings.npy`, metadata in `processed/candidate_metadata.jsonl`.
+
+### Querying for similar tests
+
+Retrieve the top-K most similar test cases for a given code file or snippet:
+
+```bash
+# From a Java source file
+python Retrieval_Pipeline/query_top_k.py /path/to/MyClass.java --top-k 5
+
+# From inline code
+python Retrieval_Pipeline/query_top_k.py "public void myMethod() { ... }" --top-k 10
+
+# JSON output
+python Retrieval_Pipeline/query_top_k.py /path/to/code.java --json-output > results.json
+```
+
+### Evaluating retrieval quality
+
+Evaluate Hit@K and MRR@K on the eval split:
+
+```bash
+python Retrieval_Pipeline/evaluate_retrieval.py --k 5 --sample 2000
+python Retrieval_Pipeline/evaluate_retrieval.py --save-results eval_results.json
+```
+
+### Generation (future)
+
+> **TODO:** FLAN-T5 test amplification has not yet been integrated. This is planned for a future milestone.
 
 ## Expected Outputs
 
@@ -171,9 +238,10 @@ When the full pipeline is complete, a single run will produce:
 
 ## Future Work
 
-- [ ] **Similarity search module** — implement Top 5 retrieval using cosine similarity (optionally backed by ChromaDB or FAISS for scalable vector search)
+- [x] **Similarity search module** — contrastive fine-tuning with MultipleNegativesRankingLoss + cosine similarity retrieval
+- [x] **Evaluation framework** — Hit@K, MRR@K, NDCG@10 evaluation on eval split
+- [ ] **Full training run** — train on all 624K pairs (currently validated with 500-pair test run)
 - [ ] **FLAN-T5 generation module** — prompt engineering and integration for test amplification
 - [ ] **End-to-end pipeline script** — single entry point accepting a feature description and producing all outputs
-- [ ] **Evaluation framework** — measure retrieval precision, generation quality, and coverage improvement
 - [ ] **Compact storage format** — migrate from JSONL to Parquet or NumPy for smaller embedding files
 - [ ] **Incremental processing** — support resuming interrupted embedding runs

@@ -2,3 +2,5 @@ sentence-transformers>=5.0
 torch>=2.0
 transformers>=5.0
 numpy>=2.0
+datasets>=2.0
+accelerate>=1.1.0
