@@ -1,0 +1,17 @@
+# SEAI Backend Dependencies
+# Install with: pip install -r requirements.txt
+
+# Sentence Transformers — for semantic similarity (embedder.py)
+sentence-transformers>=2.7
+
+# HuggingFace Transformers — for flan-t5-base (generator.py)
+transformers>=4.40
+
+# PyTorch — required by both models above
+torch>=2.0
+
+# NumPy — for vector operations in embedder.py and loader.py
+numpy>=1.26
+
+# LangChain core — for the prompt template in generator.py
+langchain-core>=0.2
