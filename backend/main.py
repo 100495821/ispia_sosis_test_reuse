@@ -38,7 +38,7 @@ _CANDIDATES_EMB   = _PROJECT_ROOT / "processed" / "candidate_embeddings.npy"
 _CANDIDATES_META  = _PROJECT_ROOT / "processed" / "candidate_metadata.jsonl"
 _VANILLA_JSONL    = _PROJECT_ROOT / "processed" / "methods2test_eval_embedded.jsonl"
 
-VANILLA_MAX_ITEMS = 300   # subsample limit for vanilla mode only
+VANILLA_MAX_ITEMS = None  # no cap — load all candidates
 TOP_K             = 5     # number of top similar test cases to display
 DESC_MAX_CHARS    = 80    # max characters to show for test case descriptions
 
