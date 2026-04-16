@@ -3,24 +3,20 @@ embedder.py
 -----------
 Handles semantic similarity scoring using Sentence Transformers.
 
-Two modes:
+Call configure_model(use_vanilla) once at startup (from main.py) before
+any similarity scoring. This selects which encoder is used:
 
-    Corpus mode  (fast)
-        Pass corpus_embeddings — pre-loaded from loader.load_candidates().
-        The test cases are already encoded; we only encode the feature query.
-        This is how the full pipeline runs with the groupmate's data.
+    Fine-tuned mode (default, use_vanilla=False)
+        Loads the fine-tuned model from models/retrieval_model/ at the project
+        root. Fails hard if that directory does not exist.
 
-    Inline mode  (flexible)
-        No corpus_embeddings provided — encode both the feature and all test
-        cases on the fly. Useful for small one-off calls without a pre-built corpus.
+    Vanilla mode (use_vanilla=True)
+        Uses the base sentence-transformers/all-MiniLM-L6-v2 model from HuggingFace.
 
-Model:
-    sentence-transformers/all-MiniLM-L6-v2
-    Same model the data pipeline uses — vectors are directly compatible.
-
-The model is loaded once on first call and reused for every subsequent call.
-Re-loading it per request would add ~2 seconds of overhead each time.
+The model is loaded once on first call to _get_model() and cached for reuse.
 """
+
+from pathlib import Path
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -30,11 +26,37 @@ from models import TestCase
 from models import SimilarityResult
 
 
-# Change this to use a different embedding model (e.g. the fine-tuned one)
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+_PROJECT_ROOT    = Path(__file__).resolve().parent.parent
+_FINETUNED_PATH  = _PROJECT_ROOT / "models" / "retrieval_model"
+_FALLBACK_MODEL  = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Set by configure_model() before first use; None means not yet configured
+_model_source: str | None = None
 
 # Cached model instance — loaded once, shared across all calls
 _model = None
+
+
+def configure_model(use_vanilla: bool) -> None:
+    """
+    Selects the embedding model to use. Must be called once before any
+    similarity scoring.
+
+    Args:
+        use_vanilla - If True, use the base all-MiniLM-L6-v2 model.
+                      If False, use the fine-tuned model from models/retrieval_model/.
+                      Raises FileNotFoundError if the fine-tuned model is missing.
+    """
+    global _model_source
+    if use_vanilla:
+        _model_source = _FALLBACK_MODEL
+    else:
+        if not _FINETUNED_PATH.exists():
+            raise FileNotFoundError(
+                f"Fine-tuned model not found at {_FINETUNED_PATH}. "
+                "Run train_retrieval_model.py first, or pass --vanilla."
+            )
+        _model_source = str(_FINETUNED_PATH)
 
 
 def _get_model() -> SentenceTransformer:
@@ -44,8 +66,10 @@ def _get_model() -> SentenceTransformer:
     """
     global _model
     if _model is None:
-        print(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
-        _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        if _model_source is None:
+            raise RuntimeError("embedder not configured — call configure_model() before use")
+        print(f"Loading embedding model: {_model_source}")
+        _model = SentenceTransformer(_model_source)
     return _model
 
 

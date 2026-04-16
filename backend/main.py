@@ -4,35 +4,43 @@ main.py
 Interactive CLI entry point for the SEAI backend pipeline.
 
 Mirrors the SOSIS web UI input/output in the terminal:
-  - Input 1: free-text feature/variant description
-  - Input 2: existing test cases, pasted one per line
+  - Input:  Java focal method (pasted code)
   - Output 1: Top 5 Reusable Test Cases with similarity scores (%)
   - Output 2: AI-Generated Test Case Suggestion
 
 Usage:
-    python main.py                  # retrieval + generation
-    python main.py --no-generate    # retrieval only (skips flan-t5, much faster)
+    python main.py                           # fine-tuned model, full candidate index
+    python main.py --no-generate             # retrieval only (skips flan-t5, much faster)
+    python main.py --vanilla                 # base model + per-row embedded JSONL
+    python main.py --vanilla --no-generate   # vanilla retrieval only
 
-Candidate pool (pre-computed embeddings):
-    /Users/henry/Desktop/SEAI/processed/methods2test_test_embedded.jsonl
+Candidate pool sources:
+    Fine-tuned (default): processed/candidate_embeddings.npy + processed/candidate_metadata.jsonl
+    Vanilla (--vanilla):  processed/methods2test_eval_embedded.jsonl
 """
 
 import argparse
 import os
+from pathlib import Path
 
+from embedder import configure_model
 from loader import load_candidates
+from loader import load_candidates_from_index
 from models import Feature
-from models import TestCase
 from pipeline import run
 
 
 # ---------------------------------------------------------------------------
-# Constants — change these to point at a different data file or adjust limits
+# Paths — resolved relative to the project root (two levels above backend/)
 # ---------------------------------------------------------------------------
-CANDIDATES_JSONL = "/Users/henry/Desktop/SEAI/processed/methods2test_test_embedded.jsonl"
-MAX_CANDIDATES   = 300   # number of rows to load from the JSONL as the candidate pool
-TOP_K            = 5    # number of top similar test cases to display
-DESC_MAX_CHARS   = 80   # max characters to show for test case descriptions
+_PROJECT_ROOT     = Path(__file__).resolve().parent.parent
+_CANDIDATES_EMB   = _PROJECT_ROOT / "processed" / "candidate_embeddings.npy"
+_CANDIDATES_META  = _PROJECT_ROOT / "processed" / "candidate_metadata.jsonl"
+_VANILLA_JSONL    = _PROJECT_ROOT / "processed" / "methods2test_eval_embedded.jsonl"
+
+VANILLA_MAX_ITEMS = 300   # subsample limit for vanilla mode only
+TOP_K             = 5     # number of top similar test cases to display
+DESC_MAX_CHARS    = 80    # max characters to show for test case descriptions
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +52,8 @@ def parse_args():
 
     Supported flags:
         --no-generate   Skip the AI generation step (retrieval only, much faster)
+        --vanilla       Use base all-MiniLM-L6-v2 model and per-row embedded JSONL
+                        instead of the fine-tuned pipeline outputs
     """
     parser = argparse.ArgumentParser(
         description="SEAI CLI — AI-powered test reuse pipeline"
@@ -52,6 +62,11 @@ def parse_args():
         "--no-generate",
         action="store_true",
         help="Skip AI test case generation (retrieval only, much faster)"
+    )
+    parser.add_argument(
+        "--vanilla",
+        action="store_true",
+        help="Use base all-MiniLM-L6-v2 model and per-row embedded JSONL instead of fine-tuned pipeline outputs"
     )
     return parser.parse_args()
 
@@ -67,7 +82,7 @@ def prompt_feature_description():
     Returns:
         str — non-empty feature description entered by the user
     """
-    print("\nDescribe the new feature or variant:")
+    print("\nPaste the Java focal method to generate a test for:")
     while True:
         description = input("> ").strip()
         if description:
@@ -75,77 +90,44 @@ def prompt_feature_description():
         print("  (Input cannot be empty. Please enter a description.)")
 
 
-def prompt_test_cases():
-    """
-    Prompts the user to paste existing test cases, one per line.
-    Input ends when the user presses Enter on a blank line.
-
-    Returns:
-        list[str] — raw lines entered by the user (not yet parsed)
-    """
-    print("\nPaste your existing test cases (one per line).")
-    print("Press Enter on a blank line when done:")
-    raw_lines = []
-    while True:
-        line = input()
-        if line.strip() == "":
-            break
-        raw_lines.append(line)
-    return raw_lines
-
-
-# ---------------------------------------------------------------------------
-# Input parsing
-# ---------------------------------------------------------------------------
-def parse_test_cases(raw_lines):
-    """
-    Parses raw user-pasted lines into TestCase objects.
-
-    Expected format (one per line):
-        TEST-001: Check payload validation
-        TEST-002: Verify handshake under timeout
-
-    Lines without a colon are treated as a name with no description.
-    Empty lines are skipped.
-
-    Args:
-        raw_lines: list[str] — raw lines from prompt_test_cases()
-
-    Returns:
-        list[TestCase]
-    """
-    test_cases = []
-    for line in raw_lines:
-        line = line.strip()
-        if not line:
-            continue
-        if ": " in line:
-            parts = line.split(": ", 1)
-            name = parts[0].strip()
-            description = parts[1].strip()
-        else:
-            name = line
-            description = ""
-        test_cases.append(TestCase(name=name, description=description, code=""))
-    return test_cases
-
-
 # ---------------------------------------------------------------------------
 # Pipeline wrappers
 # ---------------------------------------------------------------------------
-def load_candidate_pool():
+def load_candidate_pool(use_vanilla: bool):
     """
-    Loads the pre-computed candidate test cases and their embeddings from JSONL.
+    Loads the candidate test pool for the selected mode.
+
+    Fine-tuned mode (default): loads from candidate_embeddings.npy + candidate_metadata.jsonl.
+    Vanilla mode (--vanilla):  loads from the per-row embedded JSONL (up to VANILLA_MAX_ITEMS rows).
+
+    Raises FileNotFoundError if the required files are not found.
 
     Returns:
         tuple: (corpus_embeddings: np.ndarray, test_cases: list[TestCase])
     """
     print("\nLoading candidate test pool...")
-    corpus_embeddings, test_cases = load_candidates(
-        jsonl_path=CANDIDATES_JSONL,
-        max_items=MAX_CANDIDATES
-    )
-    print(f"  Loaded {len(test_cases)} candidate test cases.")
+    if use_vanilla:
+        if not _VANILLA_JSONL.exists():
+            raise FileNotFoundError(
+                f"Vanilla JSONL not found at {_VANILLA_JSONL}. "
+                "Run prepare_methods2test_embeddings.py first."
+            )
+        corpus_embeddings, test_cases = load_candidates(
+            jsonl_path=str(_VANILLA_JSONL),
+            max_items=VANILLA_MAX_ITEMS
+        )
+    else:
+        if not _CANDIDATES_EMB.exists() or not _CANDIDATES_META.exists():
+            raise FileNotFoundError(
+                "Fine-tuned candidate index not found. "
+                "Run train_retrieval_model.py first, or pass --vanilla.\n"
+                f"  Missing: {_CANDIDATES_EMB}\n"
+                f"  Missing: {_CANDIDATES_META}"
+            )
+        corpus_embeddings, test_cases = load_candidates_from_index(
+            emb_path=str(_CANDIDATES_EMB),
+            meta_path=str(_CANDIDATES_META)
+        )
     return corpus_embeddings, test_cases
 
 
@@ -162,7 +144,7 @@ def build_feature(description):
     Returns:
         Feature
     """
-    return Feature(name="user_feature", description=description, code="")
+    return Feature(name="user_feature", description="", code=description)
 
 
 def run_pipeline(feature, test_cases, corpus_embeddings, skip_generation):
@@ -250,8 +232,8 @@ def print_ranked_tests(ranked_tests):
     Prints the "Top 5 Reusable Test Cases" section.
 
     Format:
-        [1]  <test name padded to 50 chars>   84%
-             <short description, truncated>
+        [1]  64%  —  7437073_381_corpus.json
+        <full test case code>
 
     Args:
         ranked_tests: list[SimilarityResult] — from PipelineOutput.ranked_tests
@@ -267,11 +249,12 @@ def print_ranked_tests(ranked_tests):
         result = ranked_tests[rank_index]
         rank_number = rank_index + 1
         test_name = format_test_name(result.test_case.name)
-        short_desc = format_description(result.test_case.description)
         score_str = format_score_percent(result.score)
 
-        print(f"\n[{rank_number}]  {test_name:<50}  {score_str}")
-        print(f"     {short_desc}")
+        print(f"\n[{rank_number}]  {score_str}  —  {test_name}")
+        print("-" * 62)
+        print(result.test_case.code)
+        print()
 
 
 def print_generated_test(generated_test):
@@ -294,28 +277,22 @@ def print_generated_test(generated_test):
     print()
 
 
-def print_output(feature, user_test_cases, output, skip_generation):
+def print_output(feature, output, skip_generation):
     """
     Prints all results after the pipeline completes.
 
     Sections printed:
-        1. Feature description confirmation
-        2. User's test case names (if any were entered)
-        3. Top 5 Reusable Test Cases
-        4. AI-Generated Test Case Suggestion (unless skipped)
+        1. Focal method confirmation
+        2. Top 5 Reusable Test Cases
+        3. AI-Generated Test Case Suggestion (unless skipped)
 
     Args:
-        feature:          Feature
-        user_test_cases:  list[TestCase] — parsed from user input (display only)
-        output:           PipelineOutput
-        skip_generation:  bool
+        feature:         Feature
+        output:          PipelineOutput
+        skip_generation: bool
     """
     print("\n" + "=" * 62)
-    print(f'Feature: "{feature.description}"')
-
-    if user_test_cases:
-        names = ", ".join(tc.name for tc in user_test_cases)
-        print(f"Your test cases: {names}")
+    print(f'Focal method: "{format_description(feature.code)}"')
 
     print_ranked_tests(output.ranked_tests)
 
@@ -333,11 +310,11 @@ def main():
     Top-level orchestrator for the SEAI CLI.
 
     Steps:
-        1. Parse --no-generate flag
-        2. Print banner
-        3. Prompt for feature description
-        4. Prompt for existing test cases
-        5. Load candidate pool from JSONL
+        1. Parse flags (--no-generate, --vanilla)
+        2. Configure the embedding model
+        3. Print banner
+        4. Prompt for Java focal method
+        5. Load candidate pool
         6. Build Feature object from user input
         7. Run the pipeline
         8. Print formatted results
@@ -345,19 +322,21 @@ def main():
     args = parse_args()
     skip_generation = args.no_generate
 
+    # --- Configure the embedding model before anything else ---
+    configure_model(use_vanilla=args.vanilla)
+
     print("\nSOSIS — AI-Powered Test Reuse Pipeline")
     print("=" * 62)
+    print(f"Mode:       {'vanilla (base model)' if args.vanilla else 'fine-tuned'}")
     print(f"Generation: {'DISABLED (--no-generate)' if skip_generation else 'ENABLED'}")
 
     # --- Collect user input ---
     description = prompt_feature_description()
-    raw_lines = prompt_test_cases()
-    user_test_cases = parse_test_cases(raw_lines)
 
     # --- Load the candidate pool ---
-    corpus_embeddings, candidate_test_cases = load_candidate_pool()
+    corpus_embeddings, candidate_test_cases = load_candidate_pool(use_vanilla=args.vanilla)
 
-    # --- Build the Feature from free-text input ---
+    # --- Build the Feature from the Java focal method ---
     feature = build_feature(description)
 
     # --- Run the pipeline (on-the-fly feature embedding) ---
@@ -369,7 +348,7 @@ def main():
     )
 
     # --- Print results ---
-    print_output(feature, user_test_cases, output, skip_generation)
+    print_output(feature, output, skip_generation)
 
 
 if __name__ == "__main__":
