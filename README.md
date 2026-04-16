@@ -128,13 +128,50 @@ git clone https://github.com/<your-org>/ispia_sosis_test_reuse.git
 cd ispia_sosis_test_reuse
 ```
 
-### 2. Clone the Methods2Test dataset
+### 2. Install Git LFS and download the Methods2Test dataset
+
+The Methods2Test repository uses [Git LFS](https://git-lfs.com/) to store the data archives. Install it first, otherwise you will only get small pointer files instead of the actual data.
+
+**macOS**
+```bash
+brew install git-lfs
+git lfs install
+```
+
+**Ubuntu / Debian**
+```bash
+sudo apt-get install git-lfs
+git lfs install
+```
+
+**Windows** — download the installer from https://git-lfs.com and run `git lfs install` afterwards.
+
+Then clone and pull the data:
 
 ```bash
 git clone https://github.com/microsoft/methods2test.git /path/to/methods2test
+cd /path/to/methods2test
+
+# Pull only the corpus/json archives (much smaller than the full repo)
+git lfs pull --include="corpus/json/**"
 ```
 
-> This is a large repository. Only the `corpus/json/` directory is needed.
+> If you already cloned without Git LFS installed, run `git lfs install` and then `git lfs pull --include="corpus/json/**"` to fetch the real files.
+
+### 2a. Decompress the archives
+
+The corpus splits are stored as `.tar.bz2` archives. Extract them after the LFS pull:
+
+```bash
+cd /path/to/methods2test
+
+# Extract each split
+tar -xjf corpus/json/train.tar.bz2 -C corpus/json/
+tar -xjf corpus/json/eval.tar.bz2  -C corpus/json/
+tar -xjf corpus/json/test.tar.bz2  -C corpus/json/
+```
+
+This produces the `corpus/json/train/`, `corpus/json/eval/`, and `corpus/json/test/` folders that the scripts expect.
 
 ### 3. Install dependencies
 
