@@ -1,27 +1,24 @@
 """
 generator.py
 ------------
-Generates a new/amplified test case using google/flan-t5-base.
+Generates a new JUnit test case using Qwen/Qwen2.5-Coder-7B-Instruct.
 
 Responsibility:
-    Given a feature and the top similar test cases retrieved by the embedder,
-    generate a suggested new test case using a structured prompt.
+    Given a Java focal method and the top similar test cases retrieved by the
+    embedder, generate a suggested new JUnit test method using a chat prompt.
 
 Model used:
-    google/flan-t5-base
-    - Instruction-following text-to-text model
-    - Lightweight enough for an MVP (~250MB)
-    - Downloads automatically on first run
-
-LangChain classes used:
-    - HuggingFacePipeline  : wraps the HuggingFace model as a LangChain LLM
-    - PromptTemplate        : defines the structured prompt with variables
-    - LCEL chain            : connects prompt → model → output
+    Qwen/Qwen2.5-Coder-3B-Instruct
+    - Decoder-only causal LM instruction-tuned for code tasks
+    - Strong Java unit test generation
+    - Downloads automatically on first run (~6GB in float16)
+    - Requires accelerate: pip install accelerate
 """
 
+import re
+
 from transformers import AutoTokenizer
-from transformers import AutoModelForSeq2SeqLM
-from langchain_core.prompts import PromptTemplate
+from transformers import AutoModelForCausalLM
 import torch
 
 from models import Feature
@@ -31,52 +28,68 @@ from models import TestCase
 # ---------------------------------------------------------------------------
 # Model name — change this to swap in a different generator
 # ---------------------------------------------------------------------------
-GENERATOR_MODEL_NAME = "google/flan-t5-base"
+GENERATOR_MODEL_NAME = "Qwen/Qwen2.5-Coder-3B-Instruct"
 
 # Maximum number of new tokens the model can generate
-MAX_NEW_TOKENS = 200
-
+MAX_NEW_TOKENS = 512
 
 # ---------------------------------------------------------------------------
-# Prompt template
-# Curly brace variables are filled in at call time by LangChain
+# Chat messages — system sets the role, user template carries the task
+# {focal_method} and {similar_tests} are filled at call time in the user message
 # ---------------------------------------------------------------------------
-PROMPT_TEMPLATE = """You are a software test engineer working on a software product line.
+SYSTEM_MESSAGE = (
+    "You are an expert Java software test engineer. "
+    "Generate clean, correct JUnit unit tests. "
+    "Output only the test method — no class wrapper, no import statements."
+)
 
-Given the new feature below and the existing similar test cases,
-generate a new test case that tests the new feature.
+USER_TEMPLATE = """Given the focal method below, generate a new JUnit unit test for it.
 
-New Feature Name: {feature_name}
-Feature Description: {feature_description}
-Feature Code:
-{feature_code}
+Focal Method (Java):
+{focal_method}
 
-Similar existing test cases:
+Top similar existing test cases for reference:
 {similar_tests}
 
-Generate a new test case for the feature described above:"""
+Rules for the generated test:
+- Use @Test annotation (JUnit 4 or JUnit 5)
+- Method name must follow the pattern: test<MethodName>_<scenario> or should_<expectedBehavior>_when_<condition>
+- Follow the Arrange-Act-Assert (AAA) structure with one logical assertion per test
+- The test must be self-contained — no shared mutable state with other tests
+- Use standard assertions: assertEquals, assertTrue, assertFalse, assertThrows, assertNotNull
+- Do not use comments — the test name and assertions should be self-explanatory
+
+Generate only the test method body (no class wrapper, no imports):"""
+
+
+def extract_test_method_name(java_code: str) -> str:
+    """
+    Extracts the first JUnit test method name from Java test source code.
+    Looks for @Test followed by a void method declaration.
+    Falls back to 'test_unknown' if no match is found.
+    """
+    match = re.search(r"@Test(?:\([^)]*\))?\s+(?:public\s+)?void\s+(\w+)", java_code)
+    if match:
+        return match.group(1)
+    return "test_unknown"
 
 
 def format_similar_tests(top_tests: list) -> str:
     """
     Formats a list of TestCase objects into a numbered string
     so the model can read them clearly in the prompt.
+    Uses the extracted JUnit method name instead of the source file path.
     """
     formatted_lines = []
 
     for index, test_case in enumerate(top_tests):
-        # Build one entry per test case
         entry_number = index + 1
-        entry = str(entry_number) + ". " + test_case.name + "\n"
-        entry = entry + "   Description: " + test_case.description + "\n"
-
-        # Only include code block if test code was provided
+        test_name = extract_test_method_name(test_case.code) if test_case.code else "test_unknown"
+        entry = str(entry_number) + ". " + test_name + "\n"
         if test_case.code:
-            entry = entry + "   Code:\n   " + test_case.code + "\n"
-
+            entry = entry + "   " + test_case.code + "\n"
         formatted_lines.append(entry)
 
-    # Join all entries with a blank line between them
     return "\n".join(formatted_lines)
 
 
@@ -86,70 +99,56 @@ def generate_test(
     max_new_tokens: int = MAX_NEW_TOKENS
 ) -> str:
     """
-    Generates a suggested new test case for the given feature,
+    Generates a suggested new JUnit test method for the given focal method,
     informed by the most similar existing test cases.
 
     Args:
-        feature        - The new Feature to generate a test for
+        feature        - Feature whose .code field holds the Java focal method;
+                         falls back to .description if .code is empty
         top_tests      - A list of TestCase objects (top-k from the embedder)
-        max_new_tokens - How many tokens the model can generate (default 200)
+        max_new_tokens - How many tokens the model can generate (default 512)
 
     Returns:
-        A string containing the suggested test case
+        A string containing the suggested test method body
     """
 
-    # --- Step 1: Load the tokenizer and model directly from HuggingFace ---
-    print("Loading flan-t5-base model...")
+    # --- Step 1: Load tokenizer and model ---
+    print(f"Loading {GENERATOR_MODEL_NAME}...")
     tokenizer = AutoTokenizer.from_pretrained(GENERATOR_MODEL_NAME)
-    model = AutoModelForSeq2SeqLM.from_pretrained(GENERATOR_MODEL_NAME)
-
-    # --- Step 2: Build the prompt template using LangChain ---
-    prompt_template = PromptTemplate(
-        input_variables=[
-            "feature_name",
-            "feature_description",
-            "feature_code",
-            "similar_tests"
-        ],
-        template=PROMPT_TEMPLATE
+    model = AutoModelForCausalLM.from_pretrained(
+        GENERATOR_MODEL_NAME,
+        torch_dtype="auto",
+        device_map="auto",
     )
 
-    # --- Step 3: Format the similar tests into a readable string ---
+    # --- Step 2: Build the chat messages ---
     similar_tests_text = format_similar_tests(top_tests)
-
-    # --- Step 4: Use placeholder text if no code was provided for the feature ---
-    feature_code_text = feature.code
-    if not feature_code_text:
-        feature_code_text = "(no code provided)"
-
-    # --- Step 5: Fill in the prompt template to get the final prompt string ---
-    filled_prompt = prompt_template.format(
-        feature_name=feature.name,
-        feature_description=feature.description,
-        feature_code=feature_code_text,
+    user_message = USER_TEMPLATE.format(
+        focal_method=feature.code or feature.description,
         similar_tests=similar_tests_text
     )
+    messages = [
+        {"role": "system", "content": SYSTEM_MESSAGE},
+        {"role": "user",   "content": user_message},
+    ]
 
-    # --- Step 6: Tokenize the prompt into model input tensors ---
-    print("Generating test case with flan-t5...")
-    input_tokens = tokenizer(
-        filled_prompt,
-        return_tensors="pt",
-        max_length=512,
-        truncation=True
+    # --- Step 3: Apply the model's chat template ---
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
     )
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-    # --- Step 7: Run the model to generate output tokens ---
+    # --- Step 4: Generate ---
+    print(f"Generating test case with {GENERATOR_MODEL_NAME}...")
     with torch.no_grad():
-        output_tokens = model.generate(
-            input_tokens.input_ids,
-            max_new_tokens=max_new_tokens
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
         )
 
-    # --- Step 8: Decode the output tokens back into readable text ---
-    generated_text = tokenizer.decode(
-        output_tokens[0],
-        skip_special_tokens=True
-    )
-
-    return generated_text
+    # --- Step 5: Decode only the newly generated tokens (skip the prompt) ---
+    new_tokens = output_ids[0][inputs.input_ids.shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True)
