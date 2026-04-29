@@ -20,8 +20,8 @@ The SOSIS framework addresses challenges in developing and maintaining software-
 
 ```
 ┌──────────────────────┐
-│  Feature / Variant    │
-│  Description (input)  │
+│  Java focal method    │
+│  (user input)         │
 └─────────┬────────────┘
           │
      ┌────▼─────────────────┐
@@ -32,39 +32,44 @@ The SOSIS framework addresses challenges in developing and maintaining software-
           │
      ┌────▼─────────────────┐
      │  Contrastive Training │  train_retrieval_model.py
-     │  (fine-tune MiniLM    │  → models/retrieval_model/
-     │   with MNR loss)      │  → processed/candidate_embeddings.npy
+     │  (fine-tune MiniLM    │  → models/retrieval_model/ (HF: EthanS38/test_case_retreival)
+     │   with MNR loss)      │  → processed/candidate_embeddings.npy (HF: EthanS38/test_case_dataset)
      └────┬─────────────────┘
           │
      ┌────▼─────────────────┐
-     │  Top-K Retrieval      │  query_top_k.py
-     │  (encode query,       │  → Top 5 test cases + scores
+     │  Top-K Retrieval      │  backend/embedder.py + pipeline.py
+     │  (encode query,       │  → Top 5 test cases + cosine similarity scores
      │   cosine similarity)  │
      └────┬─────────────────┘
           │
           ▼
      ┌──────────────────────┐
-     │  FLAN-T5 Generator    │  (future)
-     │  (amplified test case)│
+     │  Qwen2.5-Coder-3B     │  backend/generator.py
+     │  Generator            │  → AI-amplified JUnit test method
+     └──────────────────────┘
+          │
+          ▼
+     ┌──────────────────────┐
+     │  FastAPI + Next.js    │  backend/api.py  +  frontend/
+     │  Web Interface        │  http://localhost:3000
      └──────────────────────┘
 ```
 
 **Stage 1 — Data Loading:** The Methods2Test corpus is loaded and each focal method + test case pair is embedded with all-MiniLM-L6-v2.
 
-**Stage 2 — Contrastive Training:** The pre-trained MiniLM encoder is fine-tuned with MultipleNegativesRankingLoss so that focal methods and their ground-truth test cases are pulled closer in embedding space. All candidates are then encoded with the fine-tuned model.
+**Stage 2 — Contrastive Training:** The pre-trained MiniLM encoder is fine-tuned with MultipleNegativesRankingLoss so that focal methods and their ground-truth test cases are pulled closer in embedding space. All candidates are then encoded with the fine-tuned model and published to Hugging Face.
 
-**Stage 3 — Retrieval:** A new code input is encoded with the fine-tuned model and compared against the pre-computed candidate embeddings via cosine similarity to find the top-K most relevant test cases.
+**Stage 3 — Retrieval:** A new code input is encoded with the fine-tuned model (downloaded from `EthanS38/test_case_retreival` on HF) and compared against the pre-computed candidate embeddings (downloaded from `EthanS38/test_case_dataset` on HF) via cosine similarity.
 
-**Stage 4 — Generation (future):** The input and retrieved tests will be fed to FLAN-T5 to generate an amplified test case targeting uncovered behavior.
+**Stage 4 — Generation:** The input and top-K retrieved tests are fed to `Qwen/Qwen2.5-Coder-3B-Instruct` to generate an amplified JUnit test targeting uncovered behavior.
 
 ## Models Used
 
-| Model | Role | Why |
-|-------|------|-----|
-| [`sentence-transformers/all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | Semantic embedding & retrieval | Fast, lightweight (384-dim), strong performance on similarity tasks. Encodes both focal methods and test cases into a shared vector space for cosine similarity search. |
-| [`google/flan-t5-base`](https://huggingface.co/google/flan-t5-base) | Test case generation | Instruction-tuned seq2seq model capable of generating code given context. Used to produce amplified test cases from the input description and retrieved examples. |
-
-> **Note:** FLAN-T5 generation has not yet been integrated into the pipeline. This is planned for a future milestone.
+| Model | Role | Notes |
+|-------|------|-------|
+| [`EthanS38/test_case_retreival`](https://huggingface.co/EthanS38/test_case_retreival) | Semantic embedding & retrieval | Fine-tuned MiniLM (384-dim) trained with MultipleNegativesRankingLoss on focal method ↔ test case pairs from Methods2Test. Downloaded automatically from Hugging Face on first run. |
+| [`sentence-transformers/all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | Baseline embedding (vanilla mode) | Base model before fine-tuning. Used when `--vanilla` flag is passed or `SEAI_USE_VANILLA=1` is set. |
+| [`Qwen/Qwen2.5-Coder-3B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct) | Test case generation | Decoder-only causal LM instruction-tuned for code tasks. Generates a new JUnit test method given the focal method and top-K retrieved examples. Downloads automatically (~6 GB in float16). |
 
 ## Dataset
 
@@ -91,6 +96,15 @@ Each JSON file contains flat string fields:
 | `src_fm_fc_ms` | + method signatures |
 | `src_fm_fc_ms_ff` | + fields / functions (richest context) |
 
+## Hugging Face Artifacts
+
+| Artifact | HF Repo | Description |
+|----------|---------|-------------|
+| Fine-tuned retrieval model | [`EthanS38/test_case_retreival`](https://huggingface.co/EthanS38/test_case_retreival) | Fine-tuned sentence-transformer for focal method ↔ test case similarity |
+| Candidate dataset + index | [`EthanS38/test_case_dataset`](https://huggingface.co/datasets/EthanS38/test_case_dataset) | `candidate_embeddings.npy`, `candidate_metadata-002.jsonl`, and embedded JSONL splits |
+
+The backend downloads both automatically on first run — no manual file placement needed.
+
 ## Project Structure
 
 ```
@@ -98,17 +112,34 @@ ispia_sosis_test_reuse/
 ├── README.md                          # This file
 ├── requirements.txt                   # Python dependencies
 ├── setup.sh                           # One-command environment setup
+├── run_website.sh                     # Start backend + frontend together
 ├── .gitignore                         # Excludes processed/, .venv/, models/
 ├── Data_Loading_and_Processing/
 │   ├── README.md                      # Detailed docs for data scripts
-│   └── prepare_methods2test_embeddings.py
-│                                      # Loads corpus, embeds with MiniLM,
-│                                      # writes per-split JSONL output
+│   ├── prepare_methods2test_embeddings.py
+│   │                                  # Loads corpus, embeds with MiniLM,
+│   │                                  # writes per-split JSONL output
+│   └── export_java_examples_from_processed.py
+│                                      # Exports Java example files from JSONL
 ├── Retrieval_Pipeline/
 │   ├── train_retrieval_model.py       # Fine-tune sentence-transformer,
 │   │                                  # encode candidates
 │   ├── query_top_k.py                 # Retrieve top-K tests for a query
 │   └── evaluate_retrieval.py          # Evaluate Hit@K and MRR@K on eval split
+├── backend/
+│   ├── api.py                         # FastAPI server — /health + /generate
+│   ├── pipeline.py                    # Orchestrates embedder → retrieval → generator
+│   ├── embedder.py                    # Sentence-transformer encoding + cosine ranking
+│   ├── generator.py                   # Qwen2.5-Coder-3B test generation
+│   ├── loader.py                      # Loads candidate index from HF Hub or disk
+│   ├── models.py                      # Shared dataclasses (Feature, TestCase, etc.)
+│   ├── main.py                        # Interactive CLI entry point
+│   └── BACKEND_README.md              # Detailed backend docs
+├── frontend/
+│   ├── app/                           # Next.js App Router pages
+│   ├── components/                    # React UI components
+│   ├── lib/                           # Types, store, API client, utilities
+│   └── README.md                      # Frontend docs
 ├── models/                            # (git-ignored) Fine-tuned model weights
 │   └── retrieval_model/
 └── processed/                         # (git-ignored) Embeddings & index
@@ -116,7 +147,7 @@ ispia_sosis_test_reuse/
     ├── methods2test_eval_embedded.jsonl
     ├── methods2test_test_embedded.jsonl
     ├── candidate_embeddings.npy        # Pre-encoded candidate vectors
-    └── candidate_metadata.jsonl        # Metadata for each candidate
+    └── candidate_metadata-002.jsonl    # Metadata for each candidate
 ```
 
 ## Setup
@@ -259,9 +290,43 @@ python Retrieval_Pipeline/evaluate_retrieval.py --k 5 --sample 2000
 python Retrieval_Pipeline/evaluate_retrieval.py --save-results eval_results.json
 ```
 
-### Generation (future)
+### Running the web interface
 
-> **TODO:** FLAN-T5 test amplification has not yet been integrated. This is planned for a future milestone.
+Start the FastAPI backend and Next.js frontend together:
+
+```bash
+bash run_website.sh
+```
+
+This script:
+1. Creates `.venv` and installs Python dependencies if not already done
+2. Installs frontend npm dependencies if not already done
+3. Starts the backend at `http://127.0.0.1:8000` (uvicorn)
+4. Starts the frontend at `http://localhost:3000` (Next.js dev server)
+
+Customise ports with environment variables:
+```bash
+BACKEND_PORT=8080 FRONTEND_PORT=4000 bash run_website.sh
+```
+
+To use the vanilla (base, non-fine-tuned) model:
+```bash
+SEAI_USE_VANILLA=1 bash run_website.sh
+```
+
+### Generation
+
+Generation is handled by `Qwen/Qwen2.5-Coder-3B-Instruct`. It runs automatically as part of the `/generate` endpoint and the CLI `main.py`. To skip generation and only get retrieval results:
+
+```bash
+# CLI
+python backend/main.py --no-generate
+
+# API — set skipGeneration: true in the request body
+curl -X POST http://localhost:8000/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"focalMethod": "public int add(int a, int b) { return a + b; }", "skipGeneration": true}'
+```
 
 ## Expected Outputs
 
@@ -277,8 +342,10 @@ When the full pipeline is complete, a single run will produce:
 
 - [x] **Similarity search module** — contrastive fine-tuning with MultipleNegativesRankingLoss + cosine similarity retrieval
 - [x] **Evaluation framework** — Hit@K, MRR@K, NDCG@10 evaluation on eval split
-- [ ] **Full training run** — train on all 624K pairs (currently validated with 500-pair test run)
-- [ ] **FLAN-T5 generation module** — prompt engineering and integration for test amplification
-- [ ] **End-to-end pipeline script** — single entry point accepting a feature description and producing all outputs
+- [x] **Generation module** — Qwen2.5-Coder-3B-Instruct integration for JUnit test amplification
+- [x] **FastAPI backend** — `/generate` and `/health` endpoints serving the full pipeline
+- [x] **Web interface** — Next.js frontend connected to the backend
+- [x] **Hugging Face Hub integration** — model and dataset artifacts published; downloaded automatically on first run
+- [ ] **Full training run** — train on all 624K pairs (currently validated with a subset)
 - [ ] **Compact storage format** — migrate from JSONL to Parquet or NumPy for smaller embedding files
 - [ ] **Incremental processing** — support resuming interrupted embedding runs

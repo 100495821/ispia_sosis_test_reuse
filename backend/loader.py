@@ -15,9 +15,13 @@ Two candidate-pool loaders for the two pipeline modes:
 
 import json
 import numpy as np
+from huggingface_hub import hf_hub_download
 
 from models import Feature
 from models import TestCase
+
+
+HF_DATASET_REPO = "EthanS38/test_case_dataset"
 
 
 def load_candidates_from_index(emb_path: str, meta_path: str):
@@ -47,6 +51,69 @@ def load_candidates_from_index(emb_path: str, meta_path: str):
 
     print(f"Loaded {len(test_cases)} candidates. Embeddings shape: {embeddings.shape}")
     return embeddings, test_cases
+
+
+def load_candidates_from_hf_index(
+    dataset_repo: str = HF_DATASET_REPO,
+    emb_filename: str = "candidate_embeddings.npy",
+    meta_filenames: tuple[str, ...] = ("candidate_metadata-002.jsonl", "candidate_metadata.jsonl"),
+):
+    """
+    Downloads candidate index files from a Hugging Face dataset repo and loads them.
+
+    Args:
+        dataset_repo  - Hugging Face dataset repo id, e.g. EthanS38/test_case_dataset
+        emb_filename  - Numpy embeddings filename in the dataset repo
+        meta_filenames - Metadata filename candidates tried in order
+
+    Returns:
+        embeddings  - NumPy array of shape (N, 384), float32
+        test_cases  - List of TestCase objects aligned with embedding rows
+    """
+    emb_path = hf_hub_download(
+        repo_id=dataset_repo,
+        filename=emb_filename,
+        repo_type="dataset",
+    )
+
+    last_error = None
+    meta_path = None
+    for candidate_name in meta_filenames:
+        try:
+            meta_path = hf_hub_download(
+                repo_id=dataset_repo,
+                filename=candidate_name,
+                repo_type="dataset",
+            )
+            break
+        except Exception as exc:  # pragma: no cover - fallback resolution
+            last_error = exc
+
+    if meta_path is None:
+        raise FileNotFoundError(
+            f"Could not find metadata in dataset repo {dataset_repo}. Tried: {meta_filenames}. "
+            f"Last error: {last_error}"
+        )
+
+    print(f"Loaded candidate index from Hugging Face dataset: {dataset_repo}")
+    return load_candidates_from_index(emb_path=emb_path, meta_path=meta_path)
+
+
+def load_candidates_from_hf_jsonl(
+    dataset_repo: str = HF_DATASET_REPO,
+    jsonl_filename: str = "methods2test_eval_embedded.jsonl",
+    max_items: int = None,
+):
+    """
+    Downloads an embedded JSONL from a Hugging Face dataset repo and loads candidates.
+    """
+    jsonl_path = hf_hub_download(
+        repo_id=dataset_repo,
+        filename=jsonl_filename,
+        repo_type="dataset",
+    )
+    print(f"Loaded embedded JSONL from Hugging Face dataset: {dataset_repo}/{jsonl_filename}")
+    return load_candidates(jsonl_path=jsonl_path, max_items=max_items)
 
 
 def load_candidates(jsonl_path: str, max_items: int = None):

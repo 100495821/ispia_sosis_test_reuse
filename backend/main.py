@@ -15,28 +15,26 @@ Usage:
     python main.py --vanilla --no-generate   # vanilla retrieval only
 
 Candidate pool sources:
-    Fine-tuned (default): processed/candidate_embeddings.npy + processed/candidate_metadata.jsonl
-    Vanilla (--vanilla):  processed/methods2test_eval_embedded.jsonl
+    Fine-tuned (default): Hugging Face dataset candidate index files
+    Vanilla (--vanilla):  Hugging Face dataset embedded eval JSONL
 """
 
 import argparse
 import os
-from pathlib import Path
 
 from embedder import configure_model
-from loader import load_candidates
-from loader import load_candidates_from_index
+from loader import load_candidates_from_hf_index
+from loader import load_candidates_from_hf_jsonl
 from models import Feature
 from pipeline import run
 
 
-# ---------------------------------------------------------------------------
-# Paths — resolved relative to the project root (two levels above backend/)
-# ---------------------------------------------------------------------------
-_PROJECT_ROOT     = Path(__file__).resolve().parent.parent
-_CANDIDATES_EMB   = _PROJECT_ROOT / "processed" / "candidate_embeddings.npy"
-_CANDIDATES_META  = _PROJECT_ROOT / "processed" / "candidate_metadata.jsonl"
-_VANILLA_JSONL    = _PROJECT_ROOT / "processed" / "methods2test_eval_embedded.jsonl"
+HF_DATASET_REPO = os.getenv("SEAI_HF_DATASET_REPO", "EthanS38/test_case_dataset")
+HF_MODEL_REPO = os.getenv("SEAI_HF_MODEL_REPO", "EthanS38/test_case_retreival")
+HF_EMB_FILENAME = os.getenv("SEAI_HF_EMB_FILENAME", "candidate_embeddings.npy")
+HF_META_PRIMARY = os.getenv("SEAI_HF_META_FILENAME", "candidate_metadata-002.jsonl")
+HF_META_FALLBACK = os.getenv("SEAI_HF_META_FALLBACK", "candidate_metadata.jsonl")
+HF_VANILLA_JSONL = os.getenv("SEAI_HF_VANILLA_JSONL", "methods2test_eval_embedded.jsonl")
 
 VANILLA_MAX_ITEMS = None  # no cap — load all candidates
 TOP_K             = 5     # number of top similar test cases to display
@@ -97,36 +95,24 @@ def load_candidate_pool(use_vanilla: bool):
     """
     Loads the candidate test pool for the selected mode.
 
-    Fine-tuned mode (default): loads from candidate_embeddings.npy + candidate_metadata.jsonl.
-    Vanilla mode (--vanilla):  loads from the per-row embedded JSONL (up to VANILLA_MAX_ITEMS rows).
-
-    Raises FileNotFoundError if the required files are not found.
+    Fine-tuned mode (default): loads index files from Hugging Face dataset.
+    Vanilla mode (--vanilla):  loads the embedded JSONL from Hugging Face dataset.
 
     Returns:
         tuple: (corpus_embeddings: np.ndarray, test_cases: list[TestCase])
     """
     print("\nLoading candidate test pool...")
     if use_vanilla:
-        if not _VANILLA_JSONL.exists():
-            raise FileNotFoundError(
-                f"Vanilla JSONL not found at {_VANILLA_JSONL}. "
-                "Run prepare_methods2test_embeddings.py first."
-            )
-        corpus_embeddings, test_cases = load_candidates(
-            jsonl_path=str(_VANILLA_JSONL),
+        corpus_embeddings, test_cases = load_candidates_from_hf_jsonl(
+            dataset_repo=HF_DATASET_REPO,
+            jsonl_filename=HF_VANILLA_JSONL,
             max_items=VANILLA_MAX_ITEMS
         )
     else:
-        if not _CANDIDATES_EMB.exists() or not _CANDIDATES_META.exists():
-            raise FileNotFoundError(
-                "Fine-tuned candidate index not found. "
-                "Run train_retrieval_model.py first, or pass --vanilla.\n"
-                f"  Missing: {_CANDIDATES_EMB}\n"
-                f"  Missing: {_CANDIDATES_META}"
-            )
-        corpus_embeddings, test_cases = load_candidates_from_index(
-            emb_path=str(_CANDIDATES_EMB),
-            meta_path=str(_CANDIDATES_META)
+        corpus_embeddings, test_cases = load_candidates_from_hf_index(
+            dataset_repo=HF_DATASET_REPO,
+            emb_filename=HF_EMB_FILENAME,
+            meta_filenames=(HF_META_PRIMARY, HF_META_FALLBACK),
         )
     return corpus_embeddings, test_cases
 
@@ -323,7 +309,7 @@ def main():
     skip_generation = args.no_generate
 
     # --- Configure the embedding model before anything else ---
-    configure_model(use_vanilla=args.vanilla)
+    configure_model(use_vanilla=args.vanilla, model_repo=HF_MODEL_REPO)
 
     print("\nSOSIS — AI-Powered Test Reuse Pipeline")
     print("=" * 62)

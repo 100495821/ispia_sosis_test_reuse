@@ -12,6 +12,8 @@ import json
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any
+from huggingface_hub import hf_hub_download
+from huggingface_hub import snapshot_download
 
 from sentence_transformers import SentenceTransformer, util
 
@@ -73,16 +75,22 @@ parser.add_argument(
     help="Path to a Java/code file, or a quoted string of code to use as the query.",
 )
 parser.add_argument(
-    "--index-dir",
+    "--dataset-repo",
     type=str,
-    default="processed",
-    help="Directory containing candidate_embeddings.npy and candidate_metadata.jsonl.",
+    default="EthanS38/test_case_dataset",
+    help="Hugging Face dataset repo containing candidate_embeddings.npy and metadata JSONL.",
 )
 parser.add_argument(
-    "--model-dir",
+    "--model-id",
     type=str,
-    default="models/retrieval_model",
-    help="Path to the fine-tuned model directory.",
+    default="EthanS38/test_case_retreival",
+    help="Hugging Face model repo for the fine-tuned retriever.",
+)
+parser.add_argument(
+    "--model-subdir",
+    type=str,
+    default="retrieval_model",
+    help="Optional subdirectory in the model repo containing SentenceTransformer files.",
 )
 parser.add_argument("--top-k", type=int, default=5, help="Number of results to return.")
 parser.add_argument("--verbose", action="store_true", help="Show focal method context too.")
@@ -90,14 +98,24 @@ parser.add_argument("--json-output", action="store_true", help="Print results as
 
 args = parser.parse_args()
 
-index_dir = Path(args.index_dir).resolve()
-emb_path = index_dir / "candidate_embeddings.npy"
-meta_path = index_dir / "candidate_metadata.jsonl"
+emb_path = hf_hub_download(
+    repo_id=args.dataset_repo,
+    filename="candidate_embeddings.npy",
+    repo_type="dataset",
+)
 
-if not emb_path.exists():
-    raise FileNotFoundError(f"Candidate embeddings not found at {emb_path}. Run train_retrieval_model.py first.")
-if not meta_path.exists():
-    raise FileNotFoundError(f"Metadata not found at {meta_path}. Run train_retrieval_model.py first.")
+try:
+    meta_path = hf_hub_download(
+        repo_id=args.dataset_repo,
+        filename="candidate_metadata-002.jsonl",
+        repo_type="dataset",
+    )
+except Exception:
+    meta_path = hf_hub_download(
+        repo_id=args.dataset_repo,
+        filename="candidate_metadata.jsonl",
+        repo_type="dataset",
+    )
 
 # load candidate pool
 print("Loading candidate embeddings ...")
@@ -106,7 +124,9 @@ metadata = load_metadata(meta_path)
 print(f"  {candidate_matrix.shape[0]} candidates, dim {candidate_matrix.shape[1]}")
 
 # load fine-tuned model
-model_dir = Path(args.model_dir).resolve()
+snapshot_dir = Path(snapshot_download(repo_id=args.model_id, repo_type="model"))
+candidate_model_dir = snapshot_dir / args.model_subdir
+model_dir = candidate_model_dir if (candidate_model_dir / "modules.json").exists() else snapshot_dir
 print(f"Loading fine-tuned model from {model_dir} ...")
 model = SentenceTransformer(str(model_dir))
 

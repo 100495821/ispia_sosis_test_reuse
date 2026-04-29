@@ -7,6 +7,7 @@ Scripts for loading the [Methods2Test](https://github.com/microsoft/methods2test
 | File | Description |
 |------|-------------|
 | `prepare_methods2test_embeddings.py` | Main pipeline — reads every JSON corpus file across the train/eval/test splits, constructs query (focal method) and candidate (test case) texts, encodes them with `all-MiniLM-L6-v2`, and saves per-split JSONL output. |
+| `export_java_examples_from_processed.py` | Exports individual `.java` example files from the processed JSONL output. Each row becomes a pair of `query` and `candidate` `.java` files. Used to generate the `retrieval_java_examples/` directory. |
 
 ## Prerequisites
 

@@ -3,22 +3,23 @@ embedder.py
 -----------
 Handles semantic similarity scoring using Sentence Transformers.
 
-Call configure_model(use_vanilla) once at startup (from main.py) before
+Call configure_model(use_vanilla) once at startup (from main.py/API) before
 any similarity scoring. This selects which encoder is used:
 
     Fine-tuned mode (default, use_vanilla=False)
-        Loads the fine-tuned model from models/retrieval_model/ at the project
-        root. Fails hard if that directory does not exist.
+        Loads a public fine-tuned model from Hugging Face.
 
     Vanilla mode (use_vanilla=True)
-        Uses the base sentence-transformers/all-MiniLM-L6-v2 model from HuggingFace.
+        Uses the base sentence-transformers/all-MiniLM-L6-v2 model.
 
 The model is loaded once on first call to _get_model() and cached for reuse.
 """
 
+import os
 from pathlib import Path
 
 import numpy as np
+from huggingface_hub import snapshot_download
 from sentence_transformers import SentenceTransformer
 
 from models import Feature
@@ -26,8 +27,8 @@ from models import TestCase
 from models import SimilarityResult
 
 
-_PROJECT_ROOT    = Path(__file__).resolve().parent.parent
-_FINETUNED_PATH  = _PROJECT_ROOT / "models" / "retrieval_model"
+_FINETUNED_MODEL = os.getenv("SEAI_HF_MODEL_REPO", "EthanS38/test_case_retreival")
+_FINETUNED_SUBDIR = os.getenv("SEAI_HF_MODEL_SUBDIR", "retrieval_model")
 _FALLBACK_MODEL  = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Set by configure_model() before first use; None means not yet configured
@@ -37,26 +38,28 @@ _model_source: str | None = None
 _model = None
 
 
-def configure_model(use_vanilla: bool) -> None:
+def configure_model(use_vanilla: bool, model_repo: str | None = None) -> None:
     """
     Selects the embedding model to use. Must be called once before any
     similarity scoring.
 
     Args:
         use_vanilla - If True, use the base all-MiniLM-L6-v2 model.
-                      If False, use the fine-tuned model from models/retrieval_model/.
-                      Raises FileNotFoundError if the fine-tuned model is missing.
+                  If False, use the fine-tuned model repo.
+        model_repo  - Optional Hugging Face model repo id override.
     """
     global _model_source
     if use_vanilla:
         _model_source = _FALLBACK_MODEL
     else:
-        if not _FINETUNED_PATH.exists():
-            raise FileNotFoundError(
-                f"Fine-tuned model not found at {_FINETUNED_PATH}. "
-                "Run train_retrieval_model.py first, or pass --vanilla."
-            )
-        _model_source = str(_FINETUNED_PATH)
+        repo_id = model_repo or _FINETUNED_MODEL
+        snapshot_dir = Path(snapshot_download(repo_id=repo_id, repo_type="model"))
+
+        nested_dir = snapshot_dir / _FINETUNED_SUBDIR
+        if nested_dir.exists() and (nested_dir / "modules.json").exists():
+            _model_source = str(nested_dir)
+        else:
+            _model_source = str(snapshot_dir)
 
 
 def _get_model() -> SentenceTransformer:

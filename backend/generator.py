@@ -16,6 +16,7 @@ Model used:
 """
 
 import re
+from typing import Tuple
 
 from transformers import AutoTokenizer
 from transformers import AutoModelForCausalLM
@@ -32,6 +33,9 @@ GENERATOR_MODEL_NAME = "Qwen/Qwen2.5-Coder-3B-Instruct"
 
 # Maximum number of new tokens the model can generate
 MAX_NEW_TOKENS = 512
+
+_tokenizer = None
+_generator_model = None
 
 # ---------------------------------------------------------------------------
 # Chat messages — system sets the role, user template carries the task
@@ -93,6 +97,26 @@ def format_similar_tests(top_tests: list) -> str:
     return "\n".join(formatted_lines)
 
 
+def _get_generator() -> Tuple[AutoTokenizer, AutoModelForCausalLM]:
+    """
+    Lazily loads and caches tokenizer/model so generation requests do not
+    re-download/reinitialize the model each time.
+    """
+    global _tokenizer
+    global _generator_model
+
+    if _tokenizer is None or _generator_model is None:
+        print(f"Loading {GENERATOR_MODEL_NAME}...")
+        _tokenizer = AutoTokenizer.from_pretrained(GENERATOR_MODEL_NAME)
+        _generator_model = AutoModelForCausalLM.from_pretrained(
+            GENERATOR_MODEL_NAME,
+            torch_dtype="auto",
+            device_map="auto",
+        )
+
+    return _tokenizer, _generator_model
+
+
 def generate_test(
     feature: Feature,
     top_tests: list,
@@ -113,13 +137,7 @@ def generate_test(
     """
 
     # --- Step 1: Load tokenizer and model ---
-    print(f"Loading {GENERATOR_MODEL_NAME}...")
-    tokenizer = AutoTokenizer.from_pretrained(GENERATOR_MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(
-        GENERATOR_MODEL_NAME,
-        torch_dtype="auto",
-        device_map="auto",
-    )
+    tokenizer, model = _get_generator()
 
     # --- Step 2: Build the chat messages ---
     similar_tests_text = format_similar_tests(top_tests)

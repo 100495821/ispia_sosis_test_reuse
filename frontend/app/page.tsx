@@ -7,13 +7,14 @@ import { CodeInput } from "@/components/CodeInput";
 import { GenerateButton } from "@/components/GenerateButton";
 import { ResultsSection } from "@/components/ResultsSection";
 import { useResultsStore } from "@/lib/store";
-import { mockGenerate } from "@/lib/mockData";
+import { generateFromBackend } from "@/lib/api";
 
 export default function HomePage() {
   const [code, setCode] = useState("");
 
   const status = useResultsStore((state) => state.status);
   const result = useResultsStore((state) => state.result);
+  const error = useResultsStore((state) => state.error);
   const setLoading = useResultsStore((state) => state.setLoading);
   const setResult = useResultsStore((state) => state.setResult);
   const setError = useResultsStore((state) => state.setError);
@@ -25,7 +26,10 @@ export default function HomePage() {
     if (!hasInput || isLoading) return;
     setLoading();
     try {
-      const generated = await mockGenerate(code);
+      const generated = await generateFromBackend({
+        focalMethod: code,
+        topK: 5,
+      });
       setResult(generated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed");
@@ -54,6 +58,10 @@ export default function HomePage() {
               </span>
             )}
           </div>
+
+          {error && (
+            <p className="mt-4 text-center text-sm text-rose-300">{error}</p>
+          )}
         </section>
 
         {/* Results */}

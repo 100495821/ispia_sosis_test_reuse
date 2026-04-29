@@ -1,3 +1,13 @@
 processed/
 .venv/
 models/
+retrieval_java_*/
+retrieval_test_queries_*/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS metadata
+.DS_Store

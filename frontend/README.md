@@ -1,6 +1,6 @@
 # SOSIS Frontend
 
-UI for the SOSIS Test Reuse & Amplification pipeline. Currently **fully decoupled from the backend** — it runs on mock data so you can iterate on UX without waiting on API wiring.
+UI for the SOSIS Test Reuse & Amplification pipeline. Connected to the FastAPI backend at `http://localhost:8000` via `lib/api.ts`.
 
 ## Stack
 
@@ -18,7 +18,13 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000. The backend must be running at http://localhost:8000 (or set `NEXT_PUBLIC_BACKEND_URL` to override).
+
+To start both together from the project root:
+
+```bash
+bash run_website.sh
+```
 
 ## Features
 
@@ -48,7 +54,8 @@ frontend/
 │   └── CodeBlock.tsx            Prism highlighter + copy button
 ├── lib/
 │   ├── types.ts                 TestCase, GenerationResult
-│   ├── mockData.ts              Fake backend response — swap later
+│   ├── api.ts                   generateFromBackend() — calls POST /generate
+│   ├── mockData.ts              Fake backend response for local dev without backend
 │   ├── store.ts                 Zustand store shared by both pages
 │   └── utils.ts                 cn(), score formatters, tone helpers
 ├── tailwind.config.ts
@@ -56,11 +63,9 @@ frontend/
 └── package.json
 ```
 
-## Wiring the real backend later
+## Backend API
 
-Replace the `mockGenerate()` call in [`app/page.tsx`](app/page.tsx) with a real `fetch()` to the Python backend. Keep the return shape aligned with [`lib/types.ts`](lib/types.ts) (`GenerationResult`) and nothing else in the UI has to change.
-
-Expected backend response:
+The frontend calls `POST /generate` on the backend. The response shape must match [`lib/types.ts`](lib/types.ts) (`GenerationResult`):
 
 ```ts
 {
@@ -78,8 +83,10 @@ Expected backend response:
     kind: "amplified";
     name: string;
     description: string;
-    code: string;            // the Qwen-generated JUnit test
+    code: string;            // the Qwen2.5-Coder-generated JUnit test
   };
   generatedAt: number;       // epoch ms
 }
 ```
+
+The backend URL defaults to `http://localhost:8000` and can be overridden with the `NEXT_PUBLIC_BACKEND_URL` environment variable.

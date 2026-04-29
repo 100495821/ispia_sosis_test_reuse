@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import sys
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any
@@ -99,6 +101,42 @@ def build_eval_ir(eval_path: Path, sample_size: int = 1000, seed: int = 42):
     )
 
 
+def resolve_user_path(path_value: str, colab_drive_root: str) -> Path:
+    """
+    Resolve a CLI path, optionally supporting `gdrive:` shorthand.
+    Example: gdrive:my_folder/processed -> /content/drive/MyDrive/my_folder/processed
+    """
+    if path_value.startswith("gdrive:"):
+        rel = path_value[len("gdrive:"):].lstrip("/")
+        return Path(colab_drive_root) / rel
+    return Path(path_value)
+
+
+def maybe_mount_google_drive(paths: List[Path], mount_drive: bool, force_remount: bool):
+    """Mount Google Drive in Colab when needed for /content/drive paths."""
+    in_colab = "google.colab" in sys.modules
+    if not in_colab:
+        return
+
+    using_drive_paths = any(str(p).startswith("/content/drive") for p in paths)
+    if not (mount_drive or using_drive_paths):
+        return
+
+    if Path("/content/drive").exists() and not force_remount:
+        print("Google Drive appears mounted at /content/drive")
+        return
+
+    try:
+        colab_drive = importlib.import_module("google.colab.drive")
+    except ImportError as e:
+        raise RuntimeError(
+            "Requested Google Drive mount, but google.colab is unavailable in this runtime."
+        ) from e
+
+    print("Mounting Google Drive at /content/drive ...")
+    colab_drive.mount("/content/drive", force_remount=force_remount)
+
+
 # -- main ---------------------------------------------------------------------
 
 parser = argparse.ArgumentParser(
@@ -115,6 +153,18 @@ parser.add_argument(
 parser.add_argument(
     "--output-index-dir", type=str, default="processed",
     help="Where to save encoded candidate embeddings + metadata.",
+)
+parser.add_argument(
+    "--colab-drive-root", type=str, default="/content/drive/MyDrive",
+    help="Root folder for gdrive: shorthand paths when running in Colab.",
+)
+parser.add_argument(
+    "--mount-drive", action="store_true",
+    help="Force mounting Google Drive in Colab before reading/writing paths.",
+)
+parser.add_argument(
+    "--force-remount-drive", action="store_true",
+    help="Force remount of Google Drive in Colab.",
 )
 parser.add_argument(
     "--base-model", type=str, default="sentence-transformers/all-MiniLM-L6-v2",
@@ -141,9 +191,21 @@ parser.add_argument(
 
 args = parser.parse_args()
 
-input_dir = Path(args.input_dir).resolve()
-output_model = Path(args.output_model_dir).resolve()
-output_index = Path(args.output_index_dir).resolve()
+input_dir = resolve_user_path(args.input_dir, args.colab_drive_root).resolve()
+output_model = resolve_user_path(args.output_model_dir, args.colab_drive_root).resolve()
+output_index = resolve_user_path(args.output_index_dir, args.colab_drive_root).resolve()
+
+maybe_mount_google_drive(
+    [input_dir, output_model, output_index],
+    mount_drive=args.mount_drive,
+    force_remount=args.force_remount_drive,
+)
+
+# Re-resolve after optional mount so /content/drive targets are ready to use.
+input_dir = resolve_user_path(args.input_dir, args.colab_drive_root).resolve()
+output_model = resolve_user_path(args.output_model_dir, args.colab_drive_root).resolve()
+output_index = resolve_user_path(args.output_index_dir, args.colab_drive_root).resolve()
+
 output_index.mkdir(parents=True, exist_ok=True)
 
 # discover split files
