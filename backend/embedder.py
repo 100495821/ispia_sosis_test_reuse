@@ -163,4 +163,13 @@ def rank_tests_by_similarity(
     # --- Sort from highest to lowest similarity ---
     results.sort(key=lambda result: result.score, reverse=True)
 
-    return results
+    # --- Deduplicate by code content (keep highest-scored occurrence) ---
+    seen_codes = set()
+    deduped_results = []
+    for result in results:
+        code_key = result.test_case.code.strip()
+        if code_key not in seen_codes:
+            seen_codes.add(code_key)
+            deduped_results.append(result)
+
+    return deduped_results

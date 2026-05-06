@@ -10,6 +10,7 @@ Then serves `/generate` requests from the frontend.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from dataclasses import dataclass
@@ -18,11 +19,12 @@ import numpy as np
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic import Field
 
 from embedder import configure_model
-from generator import extract_test_method_name
+from generator import extract_test_method_name, generate_test
 from loader import load_candidates_from_hf_index
 from loader import load_candidates_from_hf_jsonl
 from models import Feature
@@ -100,18 +102,59 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def startup_event() -> None:
+# ---------------------------------------------------------------------------
+# Startup progress tracking
+# ---------------------------------------------------------------------------
+
+_TOTAL_STAGES = 3
+
+_startup_progress: dict = {
+    "stage": "Connecting…",
+    "stage_index": 0,
+    "total_stages": _TOTAL_STAGES,
+    "ready": False,
+    "error": None,
+}
+
+
+async def _run_startup() -> None:
+    """Runs blocking I/O in a thread pool so the server stays responsive."""
+    loop = asyncio.get_running_loop()
     use_vanilla = os.getenv("SEAI_USE_VANILLA", "0") == "1"
 
-    configure_model(use_vanilla=use_vanilla, model_repo=HF_MODEL_REPO)
-    corpus_embeddings, test_cases = _load_candidate_pool(use_vanilla=use_vanilla)
+    try:
+        _startup_progress["stage"] = "Loading retrieval model"
+        _startup_progress["stage_index"] = 1
+        await loop.run_in_executor(
+            None,
+            lambda: configure_model(use_vanilla=use_vanilla, model_repo=HF_MODEL_REPO),
+        )
 
-    app.state.runtime = RuntimeState(
-        use_vanilla=use_vanilla,
-        corpus_embeddings=corpus_embeddings,
-        test_cases=test_cases,
-    )
+        _startup_progress["stage"] = "Loading candidate pool"
+        _startup_progress["stage_index"] = 2
+        corpus_embeddings, test_cases = await loop.run_in_executor(
+            None,
+            lambda: _load_candidate_pool(use_vanilla=use_vanilla),
+        )
+
+        app.state.runtime = RuntimeState(
+            use_vanilla=use_vanilla,
+            corpus_embeddings=corpus_embeddings,
+            test_cases=test_cases,
+        )
+
+        _startup_progress["stage"] = "Ready"
+        _startup_progress["stage_index"] = _TOTAL_STAGES
+        _startup_progress["ready"] = True
+
+    except Exception as exc:
+        _startup_progress["error"] = str(exc)
+        raise
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    asyncio.create_task(_run_startup())
 
 
 @app.get("/health")
@@ -127,8 +170,21 @@ def health():
     }
 
 
+@app.get("/status")
+def status():
+    return {
+        "ready": _startup_progress["ready"],
+        "stage": _startup_progress["stage"],
+        "stageIndex": _startup_progress["stage_index"],
+        "totalStages": _startup_progress["total_stages"],
+        "error": _startup_progress["error"],
+    }
+
+
 @app.post("/generate")
-def generate(request: GenerateRequest):
+async def generate(request: GenerateRequest):
+    import json as _json
+
     runtime = getattr(app.state, "runtime", None)
     if runtime is None:
         raise HTTPException(status_code=503, detail="Runtime not initialized")
@@ -138,43 +194,66 @@ def generate(request: GenerateRequest):
         raise HTTPException(status_code=400, detail="focalMethod cannot be empty")
 
     feature = _build_feature(focal_method)
-    output = run(
-        feature=feature,
-        test_cases=runtime.test_cases,
-        top_k=request.topK,
-        corpus_embeddings=runtime.corpus_embeddings,
-        feature_embedding=None,
-        skip_generation=request.skipGeneration,
-    )
+    loop = asyncio.get_running_loop()
 
-    reusable = []
-    for index, result in enumerate(output.ranked_tests[: request.topK]):
-        test_case = result.test_case
-        reusable.append(
-            {
-                "id": f"r{index + 1}",
-                "kind": "reusable",
-                "name": _display_name(test_case.name, test_case.code),
-                "description": _truncate(test_case.description or test_case.name),
-                "code": test_case.code,
-                "score": float(result.score),
-            }
+    async def event_stream():
+        # --- Step 1+2: rank candidates, skip generation ---
+        ranked_output = await loop.run_in_executor(
+            None,
+            lambda: run(
+                feature=feature,
+                test_cases=runtime.test_cases,
+                top_k=request.topK,
+                corpus_embeddings=runtime.corpus_embeddings,
+                feature_embedding=None,
+                skip_generation=True,
+            ),
         )
 
-    amplified_code = output.generated_test.strip()
-    if not amplified_code:
-        amplified_code = "// No generated test available"
+        reusable = []
+        for index, result in enumerate(ranked_output.ranked_tests[: request.topK]):
+            test_case = result.test_case
+            reusable.append(
+                {
+                    "id": f"r{index + 1}",
+                    "kind": "reusable",
+                    "name": _display_name(test_case.name, test_case.code),
+                    "description": _truncate(test_case.description or test_case.name),
+                    "code": test_case.code,
+                    "score": float(result.score),
+                }
+            )
 
-    response = {
-        "focalMethod": focal_method,
-        "reusable": reusable,
-        "amplified": {
+        yield f"data: {_json.dumps({'type': 'reusable', 'focalMethod': focal_method, 'reusable': reusable})}\n\n"
+
+        if request.skipGeneration:
+            yield f"data: {_json.dumps({'type': 'done'})}\n\n"
+            return
+
+        # --- Step 3: generate new test ---
+        top_tests = [r.test_case for r in ranked_output.ranked_tests[: request.topK]]
+        amplified_code = await loop.run_in_executor(
+            None,
+            lambda: generate_test(feature, top_tests),
+        )
+        amplified_code = amplified_code.strip() or "// No generated test available"
+
+        amplified = {
             "id": "a1",
             "kind": "amplified",
             "name": _display_name("generated", amplified_code),
             "description": "AI-generated JUnit test suggestion from retrieved context.",
             "code": amplified_code,
+        }
+
+        yield f"data: {_json.dumps({'type': 'amplified', 'amplified': amplified, 'generatedAt': int(time.time() * 1000)})}\n\n"
+        yield f"data: {_json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
         },
-        "generatedAt": int(time.time() * 1000),
-    }
-    return response
+    )

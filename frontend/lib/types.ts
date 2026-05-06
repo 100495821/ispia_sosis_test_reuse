@@ -13,10 +13,12 @@ export type TestCase = {
 export type GenerationResult = {
   /** The original Java focal method the user submitted */
   focalMethod: string;
-  /** Top 5 retrieved reusable tests, sorted by score desc */
+  /** Top retrieved reusable tests, sorted by score desc */
   reusable: TestCase[];
-  /** Single AI-generated JUnit test */
-  amplified: TestCase;
+  /** Single AI-generated JUnit test — null while still generating */
+  amplified: TestCase | null;
+  /** True while the AI generation step is running */
+  amplifiedLoading: boolean;
   /** Epoch ms — for cache-busting / result labelling */
   generatedAt: number;
 };

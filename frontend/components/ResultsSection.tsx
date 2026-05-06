@@ -36,10 +36,42 @@ export function ResultsSection({ result }: Props) {
           accent
         />
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:max-w-2xl">
-          <TestCard test={result.amplified} />
+          {result.amplified ? (
+            <TestCard test={result.amplified} />
+          ) : (
+            <AmplifiedLoadingCard />
+          )}
         </div>
       </div>
     </section>
+  );
+}
+
+function AmplifiedLoadingCard() {
+  return (
+    <div className="relative flex flex-col gap-3 rounded-2xl border border-white/5 bg-ink-800/60 p-5 backdrop-blur-xl">
+      {/* Badge skeleton */}
+      <div className="flex items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-md border border-accent-400/30 bg-accent-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-accent-400">
+          <Sparkles className="h-3 w-3 animate-pulse" />
+          AI generated
+        </span>
+      </div>
+
+      {/* Animated shimmer lines */}
+      <div className="space-y-2">
+        <div className="h-3 w-3/4 animate-pulse rounded-md bg-white/8" />
+        <div className="h-3 w-full animate-pulse rounded-md bg-white/5" />
+        <div className="h-3 w-5/6 animate-pulse rounded-md bg-white/5" />
+        <div className="h-3 w-2/3 animate-pulse rounded-md bg-white/5" />
+      </div>
+
+      {/* Status line */}
+      <div className="mt-auto flex items-center gap-2 pt-2">
+        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400" />
+        <span className="text-[11px] text-slate-500">Generating test case…</span>
+      </div>
+    </div>
   );
 }
 
